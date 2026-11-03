@@ -2,7 +2,9 @@
 
 A patched build of [`chatwoot/chatwoot`](https://hub.docker.com/r/chatwoot/chatwoot) that lets **Captain AI** (Chatwoot's built-in AI agent) use **Mittwald AI Hosting's `gpt-oss-120b`** model instead of being limited to OpenAI/Anthropic/Gemini cloud models.
 
-Published as: `ghcr.io/tomacg/chatwoot-mittwald:latest`
+Published as: `ghcr.io/tomacg/chatwoot-mittwald:latest`, plus one tag per upstream release (e.g. `:v4.19.1`, `:v4.17.1`) to roll back to.
+
+Currently based on Chatwoot **v4.19.1** (pinned in the `Dockerfile`).
 
 ## Why this exists
 
@@ -14,7 +16,7 @@ Chatwoot self-hosted lets you configure a custom OpenAI-compatible provider for 
 
 This image fixes (1) and (3) by overlaying two files from the stock image:
 
-- **`config/llm.yml`** — added `gpt-oss-120b` as a model, and set it as the `default` for every *text/chat* Captain feature (`conversation_completion`, `editor`, `assistant`, `copilot`, `label_suggestion`, `document_faq_generation`, `conversation_faq_generation`, `conversation_faq_matching`, `help_center_article_generation`, `onboarding_content_generation`, `help_center_query_translation`). Deliberately **left untouched**: `pdf_faq_generation` (gpt-oss-120b likely has no vision support, needed to read PDF pages), `audio_transcription` (Whisper-only, different modality), `help_center_search` (an embedding feature — handled separately via `CAPTAIN_EMBEDDING_MODEL`, see below, not via `llm.yml`).
+- **`config/llm.yml`** — added `gpt-oss-120b` as a model, and set it as the `default` for every *text/chat* Captain feature (as of v4.19.1: `conversation_completion`, `editor`, `assistant`, `copilot`, `copilot_workflows`, `document_faq_generation`, `conversation_faq_generation`, `conversation_faq_matching`, `help_center_article_generation`, `onboarding_content_generation`, `help_center_query_translation`, `message_translation`, `language_detection`). Deliberately **left untouched**: `pdf_faq_generation` (gpt-oss-120b likely has no vision support, needed to read PDF pages), `audio_transcription` and `call_announcement` (audio models, different modality), `help_center_search` (an embedding feature — handled separately via `CAPTAIN_EMBEDDING_MODEL`, see below, not via `llm.yml`).
 - **`config/llm_models.json`** — changed the single exact-match entry `id: "gpt-oss-120b"` from `"provider": "azure"` to `"provider": "openai"`, so RubyLLM routes it through the generic OpenAI-compatible client (which respects our configured `openai_api_base`/`openai_api_key`) instead of demanding Azure credentials.
 
 Fix (2) is **not** baked into the image — it's just an installation-config value. Make sure `CAPTAIN_OPEN_AI_ENDPOINT` is set without a trailing `/v1`.
@@ -33,15 +35,16 @@ Fix (2) is **not** baked into the image — it's just an installation-config val
 Mittwald's hosts run `linux/amd64`; build accordingly even from an Apple Silicon Mac:
 
 ```bash
-docker buildx build --platform linux/amd64 -t ghcr.io/tomacg/chatwoot-mittwald:latest --push .
+docker buildx build --platform linux/amd64 -t ghcr.io/tomacg/chatwoot-mittwald:<tag> -t ghcr.io/tomacg/chatwoot-mittwald:latest --push .
 ```
 
 When upstream Chatwoot ships a new version:
 
-1. Pull the new `config/llm.yml` and `config/llm_models.json` from the matching `chatwoot/chatwoot` release tag on GitHub.
-2. Re-apply the same two patches described above (add `gpt-oss-120b` to `llm.yml`'s relevant feature defaults + models lists; flip its `llm_models.json` entry from `azure` to `openai`).
-3. Rebuild and push with the command above.
-4. On the Mittwald side, force a fresh pull — since the tag stays `:latest`, mStudio won't automatically notice new content:
+1. Keep the running image reachable for a rollback, e.g. `docker buildx imagetools create -t ghcr.io/tomacg/chatwoot-mittwald:<old tag> ghcr.io/tomacg/chatwoot-mittwald:latest` (skip if that tag already exists).
+2. Run `python3 patch.py <tag>` (e.g. `v4.19.1`). It downloads `config/llm.yml` and `config/llm_models.json` from that `chatwoot/chatwoot` release and re-applies both patches described above. New text features get `gpt-oss-120b` automatically; check new features against the skip list in `patch.py`.
+3. Set the same tag in the `Dockerfile`'s `FROM` line.
+4. Rebuild and push with the command above.
+5. On the Mittwald side, force a fresh pull — since the tag stays `:latest`, mStudio won't automatically notice new content:
    ```bash
    mw container recreate -p <project-id> <container-id> --pull --force
    ```
