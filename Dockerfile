@@ -6,3 +6,5 @@ LABEL org.opencontainers.image.licenses="MIT"
 
 COPY llm.yml /app/config/llm.yml
 COPY llm_models.json /app/config/llm_models.json
+# Thread emails by contact when headers don't match (see README, "Email threading by contact")
+COPY email_thread_by_contact.rb /app/config/initializers/zz_email_thread_by_contact.rb

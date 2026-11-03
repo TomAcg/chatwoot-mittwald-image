@@ -50,6 +50,42 @@ When upstream Chatwoot ships a new version:
    ```
    (once for the `rails` container, once for `sidekiq`).
 
+## Email threading by contact
+
+Chatwoot only threads an incoming email into an existing conversation when its `In-Reply-To`/`References` headers point at a message Chatwoot knows. Replies to mails Chatwoot never sent (shop order/shipping confirmations from Shopify/Shopware) therefore always open a new conversation, and customers who reply to every status mail end up with several parallel conversations.
+
+`email_thread_by_contact.rb` (copied to `config/initializers/zz_email_thread_by_contact.rb`) prepends a fallback to `Imap::ImapMailbox#find_conversation_by_reference_ids`, which is used by both IMAP and Microsoft (Graph) email inboxes: if no conversation matches the headers, the mail goes into the contact's most recently active conversation in the same inbox, as long as that activity is newer than N days. Resolved conversations are reopened by Chatwoot's own `Message#reopen_conversation`. Auto-replies (out-of-office etc.) are never threaded this way. Each threaded mail logs `EmailThreadByContact: mail <message-id> -> conversation <display id>`.
+
+It is off unless enabled per inbox via env vars on **both** `rails` and `sidekiq` (the IMAP fetch runs in sidekiq):
+
+| Env | Meaning |
+|---|---|
+| `EMAIL_THREAD_BY_CONTACT_INBOX_IDS` | comma-separated inbox IDs, e.g. `3` (Kardena `service@kardena.de`). Empty/unset = patch inactive |
+| `EMAIL_THREAD_BY_CONTACT_DAYS` | max. age of the last activity in the target conversation, default `14` |
+
+Side effect: the agent's reply goes out with the subject of the older conversation.
+
+When rebasing onto a new upstream release, check that `app/mailboxes/imap/imap_mailbox.rb` still has a private `find_conversation_by_reference_ids` that returns a conversation or `nil`; otherwise the fallback silently stops working (a new conversation is created, nothing breaks).
+
+### Deployment (Kasefilters/Kardena, since 2026-11-03)
+
+`rails` (`c-ksaivx`) and `sidekiq` (`c-n9t3hs`) in project `p-yx1wti` run the pinned tag `ghcr.io/tomacg/chatwoot-mittwald:v4.19.1-mailthread` (not `:latest`) with `EMAIL_THREAD_BY_CONTACT_INBOX_IDS=3` and `EMAIL_THREAD_BY_CONTACT_DAYS=14`. `v4.19.1` is the same build without this initializer.
+
+Caution: `mw container update -e/--env-file` **replaces the whole env** of a container. Change single variables in mStudio (container → environment variables), or build a complete env file from `mw container list -o json` (`deployedState.envs`) first.
+
+### Rollback
+
+Pick the lightest step that's enough:
+
+1. **Switch it off without changing the image:** in mStudio, delete `EMAIL_THREAD_BY_CONTACT_INBOX_IDS` on `sidekiq` (fetches the mails) and `rails`, then recreate both. New mails are threaded by headers only again. Conversations already merged stay merged.
+2. **Remove the code:** go back to the image without the patch (env vars stay, they are just ignored):
+   ```bash
+   mw container update c-n9t3hs -p p-yx1wti --image ghcr.io/tomacg/chatwoot-mittwald:v4.19.1 --recreate   # sidekiq
+   mw container update c-ksaivx -p p-yx1wti --image ghcr.io/tomacg/chatwoot-mittwald:v4.19.1 --recreate   # rails
+   ```
+   In this repo, `git revert` the commit that added `email_thread_by_contact.rb`, so the next rebuild doesn't bring it back.
+3. **Split a wrongly merged mail out again:** Chatwoot has no "split conversation". Answer it in the conversation it landed in, or start a new conversation for the contact by hand and copy the text over.
+
 ## Where this is deployed
 
 Referenced from the `rails` and `sidekiq` services of a Mittwald mStudio container stack running the rest of a standard Chatwoot Docker deployment (`postgres`/`pgvector`, `redis`). That compose file (with real credentials) is kept private/local, not in this repo.
